@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+data/
+mappers/
+results/**/*.jsonl
+results/**/*.npy
+results/**/*.npz
+!results/**/summary.json
+!results/**/*.png
