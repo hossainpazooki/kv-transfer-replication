@@ -5,6 +5,7 @@ from pathlib import Path
 
 from kvt.hellaswag import summarize_records
 from kvt.pairs import PAIRS
+from kvt.stats import correctness_by_idx, mcnemar_exact
 
 
 def load_and_validate_records(root: Path, expect_n: int | None = None) -> dict[str, list[dict]]:
@@ -99,26 +100,93 @@ def load_and_validate_records(root: Path, expect_n: int | None = None) -> dict[s
     return records
 
 
+KNOWN_ORDER = ["native", "native-injected", "source", "identity"]
+
+
+def render_table(s: dict) -> str:
+    """Render EVERY condition in `s`, known ones first in a fixed order and the rest sorted.
+
+    The previous version iterated a hardcoded list plus `mapped-*`, so any condition named
+    anything else (composed-*, rope-*) was computed into summary.json and then silently
+    dropped from the human-read summary.md. A report that omits a condition without saying
+    so is the same fail-open class as emitting a NaN row.
+    """
+    rest = sorted(c for c in s if c not in KNOWN_ORDER)
+    lines = ["| condition | n | acc | acc_norm | 95% CI | retention raw | retention floor-norm |",
+             "|---|---|---|---|---|---|---|"]
+    for cond in [c for c in KNOWN_ORDER if c in s] + rest:
+        r = s[cond]
+        lines.append(
+            f"| {cond} | {r['n']} | {r['acc']:.3f} | {r['acc_norm']:.3f} "
+            f"| [{r['ci95'][0]:.3f}, {r['ci95'][1]:.3f}] "
+            f"| {r.get('retention_raw', float('nan')):.3f} "
+            f"| {r.get('retention_floor_norm', float('nan')):.3f} |")
+    return "\n".join(lines) + "\n"
+
+
+def build_comparisons(records: dict[str, list[dict]], pairs: list[tuple[str, str]]) -> list[dict]:
+    """One McNemar-exact comparison per (a, b) pair in `pairs`, using acc_norm-based
+    correctness (kvt.stats.correctness_by_idx(norm=True)) to match the repo's headline
+    metric. `records` comes from load_and_validate_records, which already guarantees every
+    condition scored the identical example set -- the precondition mcnemar_exact enforces
+    for a paired test. Refuses (never silently skips) a pair naming an absent condition."""
+    present = sorted(records)
+    out = []
+    for a_name, b_name in pairs:
+        missing = [c for c in (a_name, b_name) if c not in records]
+        if missing:
+            raise ValueError(
+                f"--compare {a_name} {b_name}: condition(s) {missing} not present in {sorted(records)}; "
+                f"conditions present: {present}")
+        corr_a = correctness_by_idx(records[a_name], norm=True)
+        corr_b = correctness_by_idx(records[b_name], norm=True)
+        r = mcnemar_exact(corr_a, corr_b)
+        out.append({"a": a_name, "b": b_name, "acc_a": r["acc_a"], "acc_b": r["acc_b"],
+                     "b_count": r["b"], "c_count": r["c"], "n_discordant": r["n_discordant"],
+                     "p": r["p"]})
+    return out
+
+
+def render_comparisons_table(comparisons: list[dict]) -> str:
+    lines = [
+        "",
+        "Paired comparisons (McNemar exact test; correctness is acc_norm-based -- NOT raw accuracy):",
+        "| a | b | acc_a | acc_b | b (a right, b wrong) | c (a wrong, b right) | n discordant | p |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for c in comparisons:
+        lines.append(
+            f"| {c['a']} | {c['b']} | {c['acc_a']:.3f} | {c['acc_b']:.3f} "
+            f"| {c['b_count']} | {c['c_count']} | {c['n_discordant']} | {c['p']:.4g} |")
+    return "\n".join(lines) + "\n"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pair", required=True, choices=sorted(PAIRS))
     ap.add_argument("--chance", type=float, default=0.25)
     ap.add_argument("--expect-n", type=int, default=None,
                      help="require every condition to have exactly this many records")
+    ap.add_argument("--compare", nargs=2, action="append", default=None, metavar=("A", "B"),
+                    help="paired McNemar-exact comparison between two condition names, e.g. "
+                         "--compare composed-BA-k1 mapped-C-k1. Repeatable.")
     a = ap.parse_args()
     root = Path("results/hellaswag") / a.pair
     records = load_and_validate_records(root, a.expect_n)
     s = summarize_records(records, a.chance)
-    (root / "summary.json").write_text(json.dumps(s, indent=2))
-    lines = ["| condition | n | acc | acc_norm | 95% CI | retention raw | retention floor-norm |", "|---|---|---|---|---|---|---|"]
-    for cond in ["native", "native-injected", "source", "identity"] + sorted(c for c in s if c.startswith("mapped")):
-        if cond not in s:
-            continue
-        r = s[cond]
-        lines.append(f"| {cond} | {r['n']} | {r['acc']:.3f} | {r['acc_norm']:.3f} | [{r['ci95'][0]:.3f}, {r['ci95'][1]:.3f}] "
-                     f"| {r.get('retention_raw', float('nan')):.3f} | {r.get('retention_floor_norm', float('nan')):.3f} |")
-    (root / "summary.md").write_text("\n".join(lines) + "\n")
-    print("\n".join(lines))
+    table = render_table(s)
+    md = table
+    output = dict(s)
+    if a.compare:
+        try:
+            comparisons = build_comparisons(records, [tuple(p) for p in a.compare])
+        except ValueError as e:
+            raise SystemExit(str(e))
+        output["comparisons"] = comparisons
+        md = table + render_comparisons_table(comparisons)
+    (root / "summary.json").write_text(json.dumps(output, indent=2))
+    (root / "summary.md").write_text(md)
+    print(md)
 
 
 if __name__ == "__main__":
