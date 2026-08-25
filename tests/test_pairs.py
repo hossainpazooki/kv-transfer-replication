@@ -64,3 +64,24 @@ def test_rope_theta_raises_when_neither_present():
     # Should raise ValueError
     with pytest.raises(ValueError, match="cannot determine rope_theta"):
         kv_shape(config)
+
+
+def test_wp1_chain_pairs_are_registered_and_consistent():
+    """WP1 composes 0.6B->1.7B with 1.7B->4B and compares against 0.6B->4B directly.
+    The chain only means anything if the middle model is literally the same one."""
+    from kvt.pairs import PAIRS
+    a, b, c = PAIRS["qwen3-0.6b-to-1.7b"], PAIRS["qwen3-1.7b-to-4b"], PAIRS["qwen3-0.6b-to-4b"]
+    assert a.target == b.source, "the chain's middle model must match"
+    assert a.source == c.source and b.target == c.target
+
+
+def test_check_matched_kv_allows_unequal_layer_counts():
+    """Qwen3-0.6B is 28 layers and Qwen3-4B is 36. Matched-KV is about head count and
+    head dim only; depth may differ."""
+    from types import SimpleNamespace
+    from kvt.pairs import check_matched_kv
+    src = SimpleNamespace(num_hidden_layers=28, num_key_value_heads=8, head_dim=128,
+                          hidden_size=1024, num_attention_heads=16, rope_theta=1e6)
+    tgt = SimpleNamespace(num_hidden_layers=36, num_key_value_heads=8, head_dim=128,
+                          hidden_size=2560, num_attention_heads=32, rope_theta=1e6)
+    check_matched_kv(src, tgt)  # must not raise
