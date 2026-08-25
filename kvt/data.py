@@ -1,5 +1,6 @@
 import json
 import math
+from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
@@ -64,7 +65,8 @@ class KVDump:
         self.rope_theta, self.n_seqs, self.stride = meta["rope_theta"], meta["n_seqs"], meta["stride"]
         self.positions = torch.from_numpy(positions)
         self.seq_idx = seq_idx
-        self._cache: dict[tuple[str, int], torch.Tensor] = {}
+        self._cache: "OrderedDict[tuple[str, int], torch.Tensor]" = OrderedDict()
+        self._cache_limit: int | None = None
 
     @classmethod
     def load(cls, root) -> "KVDump":
@@ -81,26 +83,77 @@ class KVDump:
         to get() for that (kind, layer) will return silently corrupted data, propagating
         errors through the entire downstream analysis.
 
-        Cloning on every call is not an option: tensors are ~210 MB each at the real run size,
-        and the ridge probe calls get() 784 times in its inner loop. Cloning would copy roughly
-        164 GB per run. The caching by reference is deliberate and load-bearing for performance.
+        Cloning on every call is not an option: at the 50-sequence run size a tensor is 52.4 MB
+        (12,800 stride-4 rows x 8 heads x 128 dims, float32) and the ridge probe calls get() 784
+        times in its inner loop, so cloning would copy about 41 GB per run. At 420 sequences a
+        tensor is 440 MB. The caching by reference is deliberate and load-bearing for performance.
+
+        Corrected 2026-08-24: this docstring previously read "~210 MB each ... roughly 164 GB
+        per run". That was the UN-STRIDED size -- it omitted the stride-4 subsampling, and was
+        4x too high. Both figures above are measured from data/kv/qwen3-0.6b-to-1.7b/source.
+        The decision is unchanged (41 GB of copying is still prohibitive); only its evidence
+        was wrong. See docs/ledger.md, "What fired / what is blocked".
 
         The contract is: read the returned tensor, extract what you need, and do not modify.
+
+        The cache is LRU-ordered and bounded by set_cache_limit(); eviction never changes a
+        returned value, since a reloaded tensor is bit-identical.
         """
         assert kind in self.KINDS, kind
         key = (kind, layer)
-        if key not in self._cache:
-            with np.load(self.root / f"layer{layer:02d}.npz") as z:
-                if kind == "V":
-                    t = torch.from_numpy(z["V"].astype(np.float32))
-                else:
-                    t = torch.from_numpy(z["K"].astype(np.float32))
-                    if kind == "K_stripped":
-                        t = strip_rope_tokens_first(t, self.positions, self.rope_theta)
-            self._cache[key] = t
-        return self._cache[key]
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            return self._cache[key]
+        with np.load(self.root / f"layer{layer:02d}.npz") as z:
+            if kind == "V":
+                t = torch.from_numpy(z["V"].astype(np.float32))
+            else:
+                t = torch.from_numpy(z["K"].astype(np.float32))
+                if kind == "K_stripped":
+                    t = strip_rope_tokens_first(t, self.positions, self.rope_theta)
+        self._cache[key] = t
+        self._evict()
+        return t
 
     def split(self, holdout_frac: float):
         n_ho = math.ceil(holdout_frac * self.n_seqs)
         heldout = self.seq_idx >= (self.n_seqs - n_ho)
         return ~heldout, heldout
+
+    def seq_range_mask(self, lo: int, hi: int) -> np.ndarray:
+        """Boolean row mask over token rows whose sequence index is in [lo, hi).
+
+        Unlike split(), the range is absolute, so a caller can grow a training prefix
+        (0, n) while holding a FIXED held-out range (h0, h1) -- which is what makes the
+        WP2 learning curve a curve in n rather than a curve in n and the held-out set at once.
+        """
+        if not (0 <= lo <= hi <= self.n_seqs):
+            raise ValueError(
+                f"invalid sequence range [{lo}, {hi}) for a dump with {self.n_seqs} sequences")
+        return (self.seq_idx >= lo) & (self.seq_idx < hi)
+
+    def clear_cache(self) -> None:
+        """Drop every lazily-loaded tensor. At 420 sequences one cached layer is ~440 MB in
+        float32; a k=8 fit holds 8 of them plus a 3.4 GB design matrix, so callers that walk
+        many layers must evict between layers or exhaust RAM."""
+        self._cache.clear()
+
+    def set_cache_limit(self, n: int | None) -> None:
+        """Bound the lazy cache to `n` tensors (None = unlimited, the default).
+
+        Needed because fit_mapper/mapper_r2 walk every target layer and the cache would
+        otherwise grow to 2*L_s + 2*L_t tensors with no eviction: 5.9 GB at 50 sequences
+        (which is why the committed runs worked) but 49 GB at 420, on a 32 GB box.
+        Eviction is invisible in the numbers -- an evicted tensor is reloaded from disk
+        bit-identically -- so this trades a little I/O for a bounded footprint.
+        """
+        if n is not None and n < 1:
+            raise ValueError(f"cache limit must be >= 1 or None, got {n}")
+        self._cache_limit = n
+        self._evict()
+
+    def _evict(self) -> None:
+        if self._cache_limit is None:
+            return
+        while len(self._cache) > self._cache_limit:
+            self._cache.popitem(last=False)      # drop least-recently-used
