@@ -84,15 +84,23 @@ def score_with_cache_provider(target, tok, ex: dict, provider) -> list[float]:
     return out
 
 
-def providers(source, target, mappers: dict) -> dict:
-    """mappers: {"k1": Mapper, ...}. Every provider maps prefix ids [B,P] -> list[(K,V)] in target layout."""
+def providers(source, target, mappers: dict, extra: dict | None = None) -> dict:
+    """mappers: {"k1": Mapper, ...} -> conditions named "mapped-k1".
+    extra: {"composed-BA-k1": (source_model, Mapper), ...} -> conditions named exactly that,
+    each free to prefill from a DIFFERENT source model (WP1's single-hop-from-middle
+    baseline prefills the 1.7B, not the 0.6B).
+    Every provider maps prefix ids [B,P] -> list[(K,V)] in target layout."""
     n_s, n_t = source.config.num_hidden_layers, target.config.num_hidden_layers
+
+    def cache_of(model, prefix):
+        n = model.config.num_hidden_layers
+        return cache_to_arrays(model(input_ids=prefix, use_cache=True).past_key_values, n)
 
     def native_injected(prefix):
         return cache_to_arrays(target(input_ids=prefix, use_cache=True).past_key_values, n_t)
 
     def source_cache(prefix):
-        return cache_to_arrays(source(input_ids=prefix, use_cache=True).past_key_values, n_s)
+        return cache_of(source, prefix)
 
     def identity(prefix):
         if n_s != n_t:
@@ -102,10 +110,19 @@ def providers(source, target, mappers: dict) -> dict:
             )
         return source_cache(prefix)
 
+    def mapped(model, mm):
+        return lambda prefix: apply_mapper(
+            mm, cache_of(model, prefix), torch.arange(prefix.shape[1], device=prefix.device))
+
     out = {"native-injected": native_injected, "identity": identity}
     for name, m in mappers.items():
-        out[f"mapped-{name}"] = (lambda mm: lambda prefix: apply_mapper(
-            mm, source_cache(prefix), torch.arange(prefix.shape[1], device=prefix.device)))(m)
+        out[f"mapped-{name}"] = mapped(source, m)
+    for name, (model, m) in (extra or {}).items():
+        if name in out:
+            raise ValueError(
+                f"extra condition name {name!r} collides with an existing condition; "
+                "pick a distinct name so the two are not silently merged")
+        out[name] = mapped(model, m)
     return out
 
 
