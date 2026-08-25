@@ -72,8 +72,16 @@ flowchart LR
 | 4 | mapped cache injected into the target, HellaSwag at n = 500, seven conditions including two null controls | `[BASELINE]` ran; n = 50 smoke `[SUPERSEDED]` |
 | — | adversarial verification of the three load-bearing claims | `[VALIDATED]` 3/3 survived |
 | — | attention-output cosine | `[STRETCH]` brief written, not run |
-| — | length generalization | `[FUTURE]` not designed — every evaluation here is short-context |
-| — | Qwen3-1.7B -> 4B pair | `[STRETCH]` in the registry, not run |
+
+Three follow-on work packages have their **code built and reviewed** but have **not produced a
+result**. Code being green is not evidence about the questions below; the status column says
+what ran, not what compiles.
+
+| work package | question it decides | status |
+|---|---|---|
+| WP1 mapper composition | does `B∘A` match a directly-fitted `C`? if so a family of n sizes needs n−1 mappers, not n(n−1) | `[STRETCH]` code built + reviewed; **not run** (needs the 4B checkpoint, ~8 GB, not downloaded) |
+| WP2 calibration learning curve | was the k = 8 collapse calibration size, or the method? | `[STRETCH]` code built + reviewed; dumps in progress; **not run** |
+| WP3 length generalization | does content-space mapping beat RoPE-space past the calibration length — the property the paper's design actually claims? | `[BASELINE]` part 1 RAN (Run 5: the two mappers compared at the calibration length; the H-G3 control holds bit-exactly). The length sweep past 1024 tokens is **not run**, so the question in this row is still open. |
 
 The two gates, both pinned by tests and both re-checked on real weights in every
 evaluation run:
@@ -150,6 +158,10 @@ gantt
     Adversarial pass, 3 claims              :v1, 2026-08-24 00:00, 3h
     Ledger, handoff, learnings              :v2, after v1, 1h
     Six commits landed                      :milestone, c1, 2026-08-24 03:49, 0m
+    section follow-on build
+    10 tasks, subagent-driven                :f1, 2026-08-24 19:30, 5h
+    420-sequence dumps                       :f2, 2026-08-24 20:05, 2h
+    Suite 42 -> 96 tests                     :milestone, f3, 2026-08-25 00:30, 0m
 ```
 
 Clock positions are approximate; the run durations are measured. Three things fired along
