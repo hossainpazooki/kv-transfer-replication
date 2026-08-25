@@ -1,0 +1,34 @@
+{
+  "512": {
+    "content-k1": {
+      "perplexity": 21.932547638163804,
+      "pct_degradation_vs_native": 36.096949475743955
+    },
+    "identity": {
+      "perplexity": 87.11861431127478,
+      "pct_degradation_vs_native": 440.5928142012701
+    },
+    "native-injected": {
+      "perplexity": 16.11538598921661,
+      "pct_degradation_vs_native": 4.9670538151477235e-06
+    },
+    "native": {
+      "perplexity": 16.115385188756754,
+      "pct_degradation_vs_native": 0.0
+    },
+    "rope-k1": {
+      "perplexity": 22.233108394844077,
+      "pct_degradation_vs_native": 37.9620042241093
+    }
+  },
+  "1024": {
+    "native-injected": {
+      "perplexity": 15.518332042731334,
+      "pct_degradation_vs_native": 5.960464657888588e-06
+    },
+    "native": {
+      "perplexity": 15.518331117766692,
+      "pct_degradation_vs_native": 0.0
+    }
+  }
+}
