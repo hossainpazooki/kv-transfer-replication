@@ -7,6 +7,11 @@ dumps made by `dump_kv.py` and a pairs file of matched token positions:
   --same-tgt   receiver model prefilling the RECEIVER prompt R
   --cross-src  source model prefilling S (optional; enables the cross measurement)
   --pairs      .npz with `pairs` [n, 2] int64: (p_S, p_R) per matched token
+  --per-token  optional .npz to receive the per-token, per-layer, per-head squared deviations
+               (linear-ceiling entry 0023): same_K, same_V, cross_K, cross_V [n, L, n_kv] and
+               ref_K, ref_V [n, L, n_kv] (the receiver's own ||x_R||^2 at p_R), float32. The
+               per-head SSE written below is the float64 sum over tokens of exactly these
+               squares, so the arrays reproduce the recorded moments (to float32 tolerance).
 
 E9-same: the receiver's content-space K (K_stripped) and V at rows p_S of `same-src` are
 compared against its own rows p_R of `same-tgt` -- how much of a matched token's KV survives a
@@ -20,6 +25,7 @@ the recorded moments. Refuses -- writes nothing -- on empty pairs, shape mismatc
 out-of-range position, or any non-finite number.
 """
 import argparse
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -28,6 +34,7 @@ import numpy as np
 
 from kvt.data import KVDump
 from kvt.mapper import Mapper, build_features
+from kvt.pertoken import moments
 from kvt.ridge import _np, predict
 
 CACHE_LIMIT = 8
@@ -40,43 +47,40 @@ def _rows(dump: KVDump, kind: str, layer: int, pos: np.ndarray) -> np.ndarray:
     return t[pos].reshape(len(pos), -1)       # [n, n_kv*d_h]
 
 
-def _moments(Y: np.ndarray, Yhat: np.ndarray, n_kv: int, d_h: int) -> dict:
-    sse, sst, r2 = [], [], []
-    Y64, H64 = Y.astype(np.float64), Yhat.astype(np.float64)
-    for h in range(n_kv):
-        y = Y64[:, h * d_h:(h + 1) * d_h]
-        e = float(((y - H64[:, h * d_h:(h + 1) * d_h]) ** 2).sum())
-        t = float(((y - y.mean(0)) ** 2).sum())
-        sse.append(e)
-        sst.append(t)
-        r2.append(1.0 - e / t)
-    return {"sse": sse, "sst": sst, "r2_head_mean": float(np.mean(r2))}
-
-
-def score_same(src: KVDump, tgt: KVDump, p_s: np.ndarray, p_r: np.ndarray) -> dict:
-    out = {"K": [], "V": []}
+def score_same(src: KVDump, tgt: KVDump, p_s: np.ndarray, p_r: np.ndarray):
+    out, sq, ref = {"K": [], "V": []}, {"K": [], "V": []}, {"K": [], "V": []}
     for l in range(tgt.n_layers):
         for kind, key in (("K_stripped", "K"), ("V", "V")):
             Yhat = _rows(src, kind, l, p_s)
             Y = _rows(tgt, kind, l, p_r)
-            out[key].append(_moments(Y, Yhat, tgt.n_kv, tgt.d_h))
-    return out
+            rec, s, r = moments(Y, Yhat, tgt.n_kv, tgt.d_h)
+            out[key].append(rec)
+            sq[key].append(s)
+            ref[key].append(r)
+    return out, sq, ref
 
 
-def score_cross(m: Mapper, cross_src: KVDump, tgt: KVDump, p_s: np.ndarray, p_r: np.ndarray) -> dict:
+def score_cross(m: Mapper, cross_src: KVDump, tgt: KVDump, p_s: np.ndarray, p_r: np.ndarray):
     mask = np.zeros(int(cross_src.positions.shape[0]), dtype=bool)
     mask[p_s] = True
     order = np.argsort(p_s)                   # build_features returns rows in position order
     inv = np.argsort(order)
-    out = {"K": [], "V": []}
+    out, sq = {"K": [], "V": []}, {"K": [], "V": []}
     for lt in range(len(m.W_K)):
         for kind, W, b, key in (("K_stripped", m.W_K[lt], m.b_K[lt], "K"),
                                 ("V", m.W_V[lt], m.b_V[lt], "V")):
             X = build_features(cross_src, m.selected[lt], kind, mask)[inv]
             Yhat = predict(X, W, b)
             Y = _rows(tgt, kind, lt, p_r)
-            out[key].append(_moments(Y, Yhat, tgt.n_kv, tgt.d_h))
-    return out
+            rec, s, _ = moments(Y, Yhat, tgt.n_kv, tgt.d_h)
+            out[key].append(rec)
+            sq[key].append(s)
+    return out, sq
+
+
+def _stack(per_layer: list) -> np.ndarray:
+    """list over layers of [n, n_kv] -> [n, L, n_kv] float32."""
+    return np.stack(per_layer, axis=1).astype(np.float32)
 
 
 def main():
@@ -87,6 +91,7 @@ def main():
     ap.add_argument("--mapper", default=None, help="required with --cross-src")
     ap.add_argument("--pairs", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--per-token", default=None, help="optional .npz for the per-token squares (entry 0023)")
     a = ap.parse_args()
     pairs = np.load(a.pairs)["pairs"]
     if pairs.size == 0:
@@ -101,8 +106,10 @@ def main():
     if (s_src.n_layers, s_src.n_kv, s_src.d_h) != (s_tgt.n_layers, s_tgt.n_kv, s_tgt.d_h):
         raise SystemExit("same-src and same-tgt dumps disagree in shape; not the same model?")
     t0 = time.time()
-    rec = {"n_pairs": int(pairs.shape[0]),
-           "same": score_same(s_src, s_tgt, p_s, p_r)}
+    same, same_sq, ref = score_same(s_src, s_tgt, p_s, p_r)
+    rec = {"n_pairs": int(pairs.shape[0]), "same": same}
+    arrays = {"same_K": _stack(same_sq["K"]), "same_V": _stack(same_sq["V"]),
+              "ref_K": _stack(ref["K"]), "ref_V": _stack(ref["V"])}
     if a.cross_src:
         if not a.mapper:
             raise SystemExit("--cross-src requires --mapper")
@@ -111,7 +118,9 @@ def main():
         c_src.set_cache_limit(CACHE_LIMIT)
         if c_src.stride != 1 or c_src.n_seqs != 1:
             raise SystemExit(f"{c_src.root}: E9 dumps must be stride-1 single sequences")
-        rec["cross"] = score_cross(m, c_src, s_tgt, p_s, p_r)
+        cross, cross_sq = score_cross(m, c_src, s_tgt, p_s, p_r)
+        rec["cross"] = cross
+        arrays["cross_K"], arrays["cross_V"] = _stack(cross_sq["K"]), _stack(cross_sq["V"])
         rec["mapper"] = {"path": str(Path(a.mapper)), "k": m.k, "space": getattr(m, "space", "content")}
     for part in ("same", "cross"):
         if part not in rec:
@@ -130,6 +139,16 @@ def main():
             for v in o:
                 walk(v)
     walk(rec)
+    for name, arr in arrays.items():
+        if not np.isfinite(arr).all():
+            raise SystemExit(f"non-finite per-token value in {name}; refusing to write")
+    if a.per_token:
+        pt = Path(a.per_token)
+        pt.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(pt, **arrays)
+        rec["per_token"] = {"path": pt.name, "sha256": hashlib.sha256(pt.read_bytes()).hexdigest(),
+                            "dtype": "float32", "arrays": sorted(arrays),
+                            "layout": "[n_pairs, n_layers, n_kv]; sse[l][h] == sum over tokens (float64)"}
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(rec))
