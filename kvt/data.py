@@ -39,7 +39,7 @@ def dump_kv(model, seqs: np.ndarray, stride: int, out_dir) -> None:
     dev = next(model.parameters()).device
     for i in tqdm(range(n_seqs), desc="dump", ascii=True):
         ids = torch.tensor(seqs[i : i + 1], device=dev)
-        out = model(input_ids=ids, use_cache=True)
+        out = model(input_ids=ids, use_cache=True, logits_to_keep=1)   # K/V unaffected; drops the [T, vocab] f32 logits (19.5 GB at 32k)
         for l in range(shape.n_layers):
             k, v = get_layer_kv(out.past_key_values, l)                       # [1, n_kv, T, d_h]
             Ks[l].append(k[0, :, keep].transpose(0, 1).to(torch.float16).cpu().numpy())
