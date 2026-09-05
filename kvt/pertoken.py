@@ -35,3 +35,25 @@ def pooled_r2(Y, Yhat) -> float:
     score_positions report."""
     Y64, H64 = np.asarray(Y, dtype=np.float64), np.asarray(Yhat, dtype=np.float64)
     return float(1.0 - ((Y64 - H64) ** 2).sum() / ((Y64 - Y64.mean(0)) ** 2).sum())
+
+
+def per_sequence_moments(sq, Y, seq_idx, n_kv: int, d_h: int):
+    """Per-sequence decomposition of the per-head moments (linear-ceiling E8 amendment).
+
+    `sq` [n, n_kv] are the per-token squares of the masked rows, `Y` [n, n_kv*d_h] their reference
+    values and `seq_idx` [n] the sequence each row came from. Returns (seq_ids [S], sse_seq [S, n_kv],
+    sst_seq [S, n_kv]) in float64, where SST is taken around the GLOBAL mean of the masked rows -- so
+    sse_seq.sum(0) == sq.sum(0) and sst_seq.sum(0) == the pooled SST exactly, and the pooled per-head
+    R^2 is 1 - sse_seq.sum(0) / sst_seq.sum(0). A per-sequence R^2 = 1 - sse_s / sst_s is a share of
+    the same decomposition, not a re-centered fit."""
+    sq = np.asarray(sq, dtype=np.float64)
+    Y64 = np.asarray(Y, dtype=np.float64).reshape(len(Y), n_kv, d_h)
+    seq_idx = np.asarray(seq_idx)
+    if len(sq) != len(Y64) or len(seq_idx) != len(Y64):
+        raise ValueError(f"per_sequence_moments: {len(sq)} squares, {len(Y64)} rows, {len(seq_idx)} indices")
+    cen = ((Y64 - Y64.mean(0, keepdims=True)) ** 2).sum(2)          # [n, n_kv], around the global mean
+    seq_ids, inv = np.unique(seq_idx, return_inverse=True)
+    sse_seq = np.zeros((len(seq_ids), n_kv)); sst_seq = np.zeros((len(seq_ids), n_kv))
+    np.add.at(sse_seq, inv, sq)
+    np.add.at(sst_seq, inv, cen)
+    return seq_ids.astype(np.int64), sse_seq, sst_seq

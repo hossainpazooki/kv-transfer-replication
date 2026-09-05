@@ -15,6 +15,12 @@ recomputes the held-out R^2 independently of `mapper_r2` and refuses if the two 
 
 Refuses (never writes a partial file) when the dumps' KV shapes disagree with the mapper, or
 when the held-out mask is empty.
+
+`--holdout-frac 1.0` (linear-ceiling E8 amendment): score EVERY sequence. Nothing is fit here, so an
+empty training mask is not an error; the train figures are then null. Use it only on dumps the mapper
+was never fit on (agent text); on the mapper's own calibration dumps it would be in-sample. With
+`--per-token`, the record also carries the per-sequence decomposition (`seq_idx`, `seq_ids`,
+`sst_seq_K/V`; `sse_seq` follows from the squares) and the json a `per_sequence` block.
 """
 import argparse
 import hashlib
@@ -26,32 +32,50 @@ import numpy as np
 
 from kvt.data import KVDump
 from kvt.mapper import Mapper, build_features, mapper_r2
-from kvt.pertoken import moments, pooled_r2
+from kvt.pertoken import moments, per_sequence_moments, pooled_r2
 from kvt.ridge import _np, predict
 
 
 def per_token_heldout(m: Mapper, src: KVDump, tgt: KVDump, mask: np.ndarray) -> tuple[dict, dict]:
     """Per-token squares on the masked rows; returns (arrays, r2) where r2 carries the
-    head-averaged per-layer R^2 recomputed from the squares and the pooled diagnostic."""
+    head-averaged per-layer R^2 recomputed from the squares and the pooled diagnostic, and the
+    per-sequence decomposition (E8 amendment): sse_seq/sst_seq [S, L, n_kv] with seq_ids [S]."""
     n = int(mask.sum())
-    sq, ref, sst, head_mean, pooled = {}, {}, {}, {}, {}
+    seq_idx = np.asarray(src.seq_idx)[mask]
+    sq, ref, sst, head_mean, pooled, sse_seq, sst_seq = {}, {}, {}, {}, {}, {}, {}
+    seq_ids = None
     for kind, Ws, bs, key in (("K_stripped", m.W_K, m.b_K, "K"), ("V", m.W_V, m.b_V, "V")):
-        sq[key], ref[key], sst[key], head_mean[key], pooled[key] = [], [], [], [], []
+        sq[key], ref[key], sst[key], head_mean[key], pooled[key], sse_seq[key], sst_seq[key] = [], [], [], [], [], [], []
         for lt in range(len(Ws)):
             X = build_features(src, m.selected[lt], kind, mask)
             Yhat = predict(X, Ws[lt], bs[lt])
             Y = _np(tgt.get(kind, lt))[mask].reshape(n, -1)
             rec, s, r = moments(Y, Yhat, m.n_kv, m.d_h)
+            ids, e_s, t_s = per_sequence_moments(s, Y, seq_idx, m.n_kv, m.d_h)
+            if seq_ids is None:
+                seq_ids = ids
+            if not np.allclose(e_s.sum(0), rec["sse"], rtol=1e-12, atol=0) or not np.allclose(t_s.sum(0), rec["sst"], rtol=1e-12, atol=0):
+                raise SystemExit(f"per-sequence moments do not sum to the layer moments ({key} layer {lt}); refusing")
             sq[key].append(s)
             ref[key].append(r)
             sst[key].append(rec["sst"])
             head_mean[key].append(rec["r2_head_mean"])
             pooled[key].append(pooled_r2(Y, Yhat))
+            sse_seq[key].append(e_s)
+            sst_seq[key].append(t_s)
     arrays = {"K_sq": np.stack(sq["K"], 1).astype(np.float32), "V_sq": np.stack(sq["V"], 1).astype(np.float32),
               "ref_K": np.stack(ref["K"], 1).astype(np.float32), "ref_V": np.stack(ref["V"], 1).astype(np.float32),
               "sst_K": np.asarray(sst["K"], dtype=np.float64), "sst_V": np.asarray(sst["V"], dtype=np.float64),
-              "n_heldout": np.asarray(n, dtype=np.int64)}
-    return arrays, {"head_mean": head_mean, "pooled": pooled}
+              "n_heldout": np.asarray(n, dtype=np.int64),
+              "seq_idx": seq_idx.astype(np.int64), "seq_ids": seq_ids.astype(np.int64),
+              "sse_seq_K": np.stack(sse_seq["K"], 1), "sse_seq_V": np.stack(sse_seq["V"], 1),      # [S, L, n_kv] float64
+              "sst_seq_K": np.stack(sst_seq["K"], 1), "sst_seq_V": np.stack(sst_seq["V"], 1)}
+    per_seq = {"seq_ids": [int(i) for i in seq_ids],
+               "definition": "1 - sse_s/sst_s per head, SST around the GLOBAL held-out mean (a share of the pooled decomposition), head-mean then layer-mean"}
+    for key in ("K", "V"):
+        r2s = 1.0 - arrays[f"sse_seq_{key}"] / arrays[f"sst_seq_{key}"]     # [S, L, n_kv]
+        per_seq[f"{key}_r2_layer_mean"] = [float(x) for x in r2s.mean((1, 2))]
+    return arrays, {"head_mean": head_mean, "pooled": pooled, "per_sequence": per_seq}
 
 
 def main():
@@ -72,20 +96,23 @@ def main():
         raise SystemExit(f"mapper/target shape mismatch: mapper n_kv={m.n_kv} d_h={m.d_h} "
                          f"L={len(m.W_K)}, target n_kv={tgt.n_kv} d_h={tgt.d_h} L={tgt.n_layers}")
     tr, ho = src.split(a.holdout_frac)
-    if not ho.any() or not tr.any():
-        raise SystemExit("empty training or held-out mask; refusing to score")
+    if not ho.any():
+        raise SystemExit("empty held-out mask; refusing to score")
+    if not tr.any() and a.holdout_frac < 1.0:
+        raise SystemExit("empty training mask below --holdout-frac 1.0; refusing to score")
     t0 = time.time()
     r2_ho = mapper_r2(m, src, tgt, ho)
-    r2_tr = mapper_r2(m, src, tgt, tr)
+    r2_tr = mapper_r2(m, src, tgt, tr) if tr.any() else None   # --holdout-frac 1.0: nothing is held back
     rec = {
         "mapper": str(Path(a.mapper)), "src": str(Path(a.src)), "tgt": str(Path(a.tgt)),
         "holdout_frac": a.holdout_frac, "n_seqs": int(src.n_seqs), "stride": int(src.stride),
         "n_train_tokens": int(tr.sum()), "n_heldout_tokens": int(ho.sum()),
         "k": m.k, "space": getattr(m, "space", "content"),
-        "K_r2_train_layer_mean": float(np.mean(r2_tr["K"])),
+        "K_r2_train_layer_mean": float(np.mean(r2_tr["K"])) if r2_tr is not None else None,
         "K_r2_heldout_layer_mean": float(np.mean(r2_ho["K"])),
-        "V_r2_train_layer_mean": float(np.mean(r2_tr["V"])),
+        "V_r2_train_layer_mean": float(np.mean(r2_tr["V"])) if r2_tr is not None else None,
         "V_r2_heldout_layer_mean": float(np.mean(r2_ho["V"])),
+        "n_heldout_seqs": int(len(np.unique(np.asarray(src.seq_idx)[ho]))),
         "K_r2_heldout_per_layer": [float(x) for x in r2_ho["K"]],
         "V_r2_heldout_per_layer": [float(x) for x in r2_ho["V"]],
     }
@@ -107,6 +134,8 @@ def main():
         rec["V_r2_heldout_pooled_over_heads_per_layer"] = r2pt["pooled"]["V"]
         rec["K_r2_heldout_pooled_over_heads_layer_mean"] = float(np.mean(r2pt["pooled"]["K"]))
         rec["V_r2_heldout_pooled_over_heads_layer_mean"] = float(np.mean(r2pt["pooled"]["V"]))
+        rec["per_sequence"] = r2pt["per_sequence"]
+        rec["per_token"]["layout"] += "; sse_seq_*/sst_seq_* [n_heldout_seqs, n_layers, n_kv] float64, seq_ids/seq_idx int64"
     rec["seconds"] = time.time() - t0
     for k, v in rec.items():
         if isinstance(v, float) and not np.isfinite(v):

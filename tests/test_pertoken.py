@@ -12,7 +12,7 @@ import torch
 
 from kvt.data import KVDump, dump_kv
 from kvt.mapper import Mapper, fit_mapper, mapper_r2, select_top_k
-from kvt.pertoken import moments, per_token_squares, pooled_r2
+from kvt.pertoken import moments, per_sequence_moments, per_token_squares, pooled_r2
 from kvt.ridge import probe_r2
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -111,3 +111,31 @@ def test_score_mapper_per_token_centered_mean_is_one_minus_r2(tmp_path, tiny_src
         assert len(rec[f"{key}_r2_heldout_pooled_over_heads_per_layer"]) == 3
     # the per-token path is checked against mapper_r2 inside the script; confirm the archive-style keys survived
     assert rec["K_r2_heldout_layer_mean"] == pytest.approx(np.mean(mapper_r2(m, src, tgt, ho)["K"]))
+
+
+def test_per_sequence_moments_decompose_the_layer_moments_exactly():
+    """E8 amendment: sequence sums of SSE and SST reproduce the layer moments, so the pooled per-head
+    R^2 is recoverable from the per-sequence record; the row count must match."""
+    rng = np.random.default_rng(1)
+    n_kv, d_h, n_seqs, per = 2, 4, 5, 6
+    Y, Yhat = rng.normal(size=(n_seqs * per, n_kv * d_h)), rng.normal(size=(n_seqs * per, n_kv * d_h))
+    seq_idx = np.repeat(np.arange(n_seqs), per)
+    rec, sq, _ = moments(Y, Yhat, n_kv, d_h)
+    ids, sse_s, sst_s = per_sequence_moments(sq, Y, seq_idx, n_kv, d_h)
+    assert list(ids) == list(range(n_seqs)) and sse_s.shape == sst_s.shape == (n_seqs, n_kv)
+    assert np.allclose(sse_s.sum(0), rec["sse"], rtol=0, atol=1e-10)
+    assert np.allclose(sst_s.sum(0), rec["sst"], rtol=0, atol=1e-10)
+    assert np.allclose(1 - sse_s.sum(0) / sst_s.sum(0), 1 - np.asarray(rec["sse"]) / np.asarray(rec["sst"]))
+    with pytest.raises(ValueError, match="indices"):
+        per_sequence_moments(sq, Y, seq_idx[:-1], n_kv, d_h)
+
+
+def test_split_at_one_holds_out_every_sequence(tmp_path):
+    """--holdout-frac 1.0 must yield an empty training mask and a full held-out mask (score_mapper.py
+    accepts this when only scoring; fit_mapper still needs training rows)."""
+    from kvt.data import KVDump
+    n_seqs, n_pos = 3, 4
+    meta = {"n_layers": 1, "n_kv": 1, "d_h": 2, "rope_theta": 10000.0, "n_seqs": n_seqs, "stride": 1}
+    d = KVDump(tmp_path, meta, np.tile(np.arange(n_pos), n_seqs), np.repeat(np.arange(n_seqs), n_pos))
+    tr, ho = d.split(1.0)
+    assert not tr.any() and ho.all()
