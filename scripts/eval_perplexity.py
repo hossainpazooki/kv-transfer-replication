@@ -20,6 +20,11 @@ def main():
     ap.add_argument("--cont-len", type=int, default=256)
     ap.add_argument("--content-mapper", default=None)
     ap.add_argument("--rope-mapper", default=None)
+    ap.add_argument("--tag", default=None,
+                    help="subdirectory under results/perplexity/<pair>/ for this run. Required "
+                         "when re-running with a different --n-windows: the untagged path holds "
+                         "the artifacts behind docs/ledger.md Run 7, and a run with a different "
+                         "window count writes different numbers under the same filenames.")
     args = ap.parse_args()
 
     pair = PAIRS[args.pair]
@@ -42,8 +47,22 @@ def main():
     # prefix length with which text was scored.
     windows, max_prefix = fixed_continuation_windows(tok, args.n_windows, args.prefix_lens, args.cont_len)
 
+    base = Path("results/perplexity") / args.pair
+    if args.tag:
+        base = base / args.tag
     for P in args.prefix_lens:
-        root = Path("results/perplexity") / args.pair / f"P{P}"
+        root = base / f"P{P}"
+        # Guard mirroring scripts/dump_kv.py: a directory holding a DIFFERENT number of windows
+        # is a different experiment, and overwriting it would silently change published numbers.
+        existing = sorted(root.glob("*.jsonl"))
+        if existing:
+            n_prev = sum(1 for line in existing[0].read_text().splitlines() if line.strip())
+            if n_prev != args.n_windows:
+                raise SystemExit(
+                    f"refusing to overwrite {root}: it holds a {n_prev}-window run and this one "
+                    f"would write {args.n_windows}. Different window counts are different "
+                    f"experiments and would change the reported perplexity under the same "
+                    f"filenames. Pass --tag to write elsewhere.")
         root.mkdir(parents=True, exist_ok=True)
         for name in ["native"] + conds:
             recs = []

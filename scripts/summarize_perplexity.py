@@ -121,8 +121,12 @@ def render_table(summary: dict[str, dict[str, dict]]) -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pair", required=True)
+    ap.add_argument("--tag", default=None,
+                    help="summarize the run under results/perplexity/<pair>/<tag>/ instead")
     a = ap.parse_args()
     root = Path("results/perplexity") / a.pair
+    if a.tag:
+        root = root / a.tag
     p_dirs = sorted((d for d in root.iterdir() if d.is_dir() and d.name.startswith("P")),
                     key=lambda d: int(d.name[1:]))
     if not p_dirs:
