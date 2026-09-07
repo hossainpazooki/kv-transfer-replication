@@ -111,6 +111,58 @@ one named.
 Decision rule for all three work packages: state the verdict against the rule as written
 above, before considering which outcome is the more interesting one to report.
 
+## WP3 run design, pre-registered 2026-08-26 BEFORE the sweep (Run 8)
+
+Measured cost first rather than guessing: 157 s for 2 windows x 5 conditions at P=2048
+including ~40 s of model loading, i.e. ~11.7 s per window-condition at that length. That budget
+buys 32 windows across four prefix lengths in roughly 2.5 h, so the design below is chosen for
+statistical power rather than for what was affordable at 12 windows.
+
+**Provenance of this pre-registration — stated because the repository cannot prove it.**
+Session-transcript timestamps: this section was written 2026-08-26T19:37:03Z; the sweep was
+launched 19:37:14Z; the first artifact was born 19:43Z. So the rule preceded the data — by
+eleven seconds — but that ordering is provable only from the session log. `docs/ledger.md` is
+one continuously edited file whose mtime is always later than everything, and this section
+was uncommitted when the run started. The WP3 *hypotheses* (H-G1..G3) are provably prior via
+commit `f359445` (2026-08-24); the *statistic and threshold* below are not. Two further
+disclosures: (a) a 2-window P=2048 timing smoke ran at 19:33Z, four minutes BEFORE this rule
+was written, and its output contained content-vs-rope values for both variants; only its
+first five lines (native / native-injected / identity) were displayed, and the directory was
+deleted, but a skeptic cannot verify what was read. (b) The heading date originally said
+2026-08-25; corrected 2026-08-26 after the verification pass caught it. Consequence adopted
+going forward: one committed `docs/prereg/<run>.md` per run, SHA stamped into results (see
+`docs/superpowers/specs/2026-08-26-gpu-verification-plan.md` §1).
+
+**Design.** 32 windows (Run 7 used 12 and could not resolve content vs rope at P=512: 9/12,
+sign test p = 0.146). Prefix lengths P in {1024, 2048, 4096, 512}, run in that order so that an
+interruption still leaves the informative pair -- 1024 sits AT the 1024-token calibration
+length and 2048 is the first length at which the mapper is applied to positions it never saw.
+Windows are drawn once at max(P) = 4096, so every P scores the SAME 256-token continuation and
+only the amount of preceding context varies. Written under
+`results/perplexity/qwen3-0.6b-to-1.7b/w32/` so Run 7's 12-window artifacts are preserved;
+`_chunk` takes windows from the front, so Run 7's 12 windows are a strict prefix of these 32.
+
+**Statistic.** Per window w and length P, `d_w(P) = nll_rope(w,P) - nll_content(w,P)` on
+NLL-per-token. Report the pooled perplexity `exp(sum_nll / sum_tokens)` per condition (never a
+mean of per-window perplexities), and test the paired differences with an exact sign test and
+a Wilcoxon signed-rank test.
+
+- **H-G1 leg 1 (the slope, and after Run 5 the load-bearing leg):** the content-vs-rope gap
+  GROWS with P. Operationalised as a difference-of-differences: `d_w(4096) - d_w(1024)`, tested
+  paired across the 32 windows. Confirmed only if that is positive and significant.
+- **H-G1 leg 2:** at the largest P completed, content-space degradation vs native is at least
+  5 percentage points below rope-space.
+- **H-G2:** neither leg reaches significance, or the two variants degrade equally.
+- **Multiple comparisons:** five tests are planned (content vs rope at each of four P, plus the
+  difference-of-differences), so the threshold is Bonferroni 0.05/5 = **0.01**, fixed here in
+  advance. A p between 0.01 and 0.05 is recorded as not established, exactly as mapped-k8 vs
+  identity was in Run 6.
+
+**What this design still cannot do.** One pair, one direction, k=1, one lambda, and a mapper
+whose layer selection was inherited from the content-space probe for both variants (that
+asymmetry favours content space and is stated here so it is not discovered later). A result
+either way is about Qwen3-0.6B -> 1.7B at 1024-token calibration, not about the paper's regime.
+
 ## Runs
 
 ### Run 1 — calibration dumps + single-source OLS probe (replication steps 1-2) `[BASELINE]`
@@ -447,6 +499,61 @@ calibration length, so the mapper is applied only at positions it was fitted on.
 correction recorded in the pre-registration above, the first informative point is P=2048, which
 did not run. WP3's length question remains **open**.
 
+### Run 8 — content-space vs rope-space past the calibration length (WP3, part 2) `[BASELINE, PARTIAL]`
+
+2026-08-26. 32 windows, shared 256-token continuation, `results/perplexity/qwen3-0.6b-to-1.7b/w32/`.
+**Final state (the job was killed 2026-08-26, not by the author): P=1024 and P=2048 complete;
+P=4096 has only `native` and `native-injected` (both 14.5699 — the injection gate holds at 4x
+the calibration length) and no mapped conditions; P=512 never started.** Of the four planned
+lengths, two completed. The entry stays PARTIAL: the rule is met on the pair of lengths that
+straddle the calibration boundary, and "largest P completed" for leg 2 is therefore 2048, not
+the 4096 the design intended.
+
+| P | native ppl | content ppl | rope ppl | content % deg | rope % deg |
+|---|---|---|---|---|---|
+| 1024 (AT calibration) | 15.1810 | 21.6572 | 21.7602 | 42.66 | 43.34 |
+| 2048 (BEYOND)         | 14.5366 | 21.6018 | 22.4332 | 48.60 | **54.32** |
+
+Paired per-window `rope - content` NLL/token (positive = content better):
+
+| P | mean | t | content better on | sign p |
+|---|---|---|---|---|
+| 1024 | +0.0047 | +0.98 | 16/32 | 1.000 |
+| 2048 | +0.0378 | +3.94 | 25/32 | **0.0021** |
+
+**H-G1 leg 1 — CONFIRMED against the rule as written.** The pre-registered statistic is the
+difference-of-differences `d_w(2048) - d_w(1024)`, paired across the 32 windows:
+**mean +0.03302, t = +3.92, positive on 25/32, sign p = 0.0021**, which clears the Bonferroni
+threshold of 0.01 fixed in advance for the five planned tests. The content-vs-rope gap GROWS
+with prefix length.
+
+**H-G1 leg 2 — met at P=2048** (54.32 - 48.60 = 5.72 pp, against a 5 pp criterion). The rule
+names *the largest P completed*; after the kill that is 2048, so leg 2 is met by the rule's
+letter and untested at the 4096 the design intended. Recorded as met-at-2048, not as met.
+
+**Why the difference-of-differences was the right pre-registered statistic, and not a
+convenience.** The pre-registration records an asymmetry that FAVOURS content space: both
+variants inherit layer selection from the content-space probe. A raw content-vs-rope gap would
+be confounded by it. The DoD is immune, because a selection bias is length-INDEPENDENT and
+subtracts out. The data bears that out directly: at P=1024 the two variants are
+indistinguishable (16/32 windows, sign p = 1.000) — precisely what a constant bias could not
+produce, since it would tilt every length equally. The gap appears only where the mapper is
+applied to positions it never saw.
+
+**What this establishes, stated narrowly.** On Qwen3-0.6B -> 1.7B at k=1 with 1024-token
+calibration, mapping in RoPE-stripped content space generalizes past the calibration length
+better than mapping the rotated keys directly. That is the paper's stated justification for its
+central design choice, and — as far as this replication can determine — **it had never been
+tested directly**, including by the paper, whose own RoPE ablation is short-context.
+
+**And it is a crossover, which is stronger than a widening lead.** Run 5 measured rope-space
+AHEAD at the calibration length on held-out K R^2 (+0.0252). Run 8 finds the two
+indistinguishable on perplexity AT that length and content ahead BEYOND it. A single mechanism
+that made content simply better everywhere would not produce that pattern.
+
+**Not established by this run:** one pair, one direction, k=1, one lambda, one calibration
+length, perplexity rather than task accuracy, and nothing about the paper's ~128K-token regime.
+
 ## Adversarial verification `[VALIDATED]`
 
 Three load-bearing claims were handed to an independent skeptic instructed to refute them,
@@ -500,6 +607,17 @@ Run 3 and Run 4 artifacts cannot be established from history — only from the f
 stand. Committing (the commands are prepared for the operator) closes this.
 
 ## What fired / what is blocked
+
+- **`summarize_perplexity.py` accepted a prefix-length directory holding only the two gate
+  conditions and emitted it as two clean rows (2026-08-26).** After Run 8 was killed, `P4096/`
+  contained `native` and `native-injected` and nothing else; the summarizer's fail-closed
+  checks (native present, native-injected present, window sets equal, gate within tolerance)
+  all passed, so `summary.md` gained a P=4096 block with 0.00% degradation and no mapped rows.
+  Not wrong data — but a length that measured nothing about the mapper reports as if it had
+  been evaluated, and a reader skimming the table would not see the absence. Same family as
+  the NaN row and the dropped-condition table. Fix: refuse, or mark `[GATE ONLY]`, when a
+  directory has no condition beyond the gate pair. Not yet fixed.
+
 
 - **Two background runs were killed mid-flight (2026-08-24); the loss profile was asymmetric
   and worth knowing.** The 420-sequence dump had finished `source` (28/28 layers, 12 GB, valid)

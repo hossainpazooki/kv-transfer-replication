@@ -1,0 +1,56 @@
+{
+  "1024": {
+    "content-k1": {
+      "perplexity": 21.657154467527747,
+      "pct_degradation_vs_native": 42.65972712674605
+    },
+    "identity": {
+      "perplexity": 88.56143619155462,
+      "pct_degradation_vs_native": 483.3707442952986
+    },
+    "native-injected": {
+      "perplexity": 15.180986038266195,
+      "pct_degradation_vs_native": -5.587935293621389e-06
+    },
+    "native": {
+      "perplexity": 15.180986886569919,
+      "pct_degradation_vs_native": 0.0
+    },
+    "rope-k1": {
+      "perplexity": 21.760222959416524,
+      "pct_degradation_vs_native": 43.33865856024829
+    }
+  },
+  "2048": {
+    "content-k1": {
+      "perplexity": 21.601803076778936,
+      "pct_degradation_vs_native": 48.602494731918256
+    },
+    "identity": {
+      "perplexity": 99.86705206671444,
+      "pct_degradation_vs_native": 587.0025166829276
+    },
+    "native-injected": {
+      "perplexity": 14.5366343582208,
+      "pct_degradation_vs_native": -8.195638327240783e-06
+    },
+    "native": {
+      "perplexity": 14.536635549590875,
+      "pct_degradation_vs_native": 0.0
+    },
+    "rope-k1": {
+      "perplexity": 22.433193534516903,
+      "pct_degradation_vs_native": 54.321771760648375
+    }
+  },
+  "4096": {
+    "native-injected": {
+      "perplexity": 14.569935494985955,
+      "pct_degradation_vs_native": 0.0
+    },
+    "native": {
+      "perplexity": 14.569935494985955,
+      "pct_degradation_vs_native": 0.0
+    }
+  }
+}
