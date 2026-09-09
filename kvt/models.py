@@ -38,9 +38,37 @@ ATTN_IMPLEMENTATION = "sdpa_repeat_kv"
 AttentionInterface.register(ATTN_IMPLEMENTATION, sdpa_repeat_kv_forward)
 
 
-def load_model(model_id: str):
+def scaled_config(model_id: str, rope_scaling: dict):
+    """The model's config with RoPE scaling applied (linear-ceiling E9-long, 2026-09-09).
+
+    `rope_scaling` is the HF form, e.g. {"rope_type": "yarn", "factor": 2.5,
+    "original_max_position_embeddings": 32768}; it is merged over the config's own rope_parameters
+    (so rope_theta stays the model's) and max_position_embeddings is set to
+    original * factor, which is what transformers' YaRN init otherwise infers and warns about.
+    Refuses a scaling without the three keys, or a factor that would not extend the window.
+    """
+    from transformers import AutoConfig
+    for key in ("rope_type", "factor", "original_max_position_embeddings"):
+        if key not in rope_scaling:
+            raise ValueError(f"rope_scaling needs '{key}' (HF form); got {sorted(rope_scaling)}")
+    factor, orig = float(rope_scaling["factor"]), int(rope_scaling["original_max_position_embeddings"])
+    if factor <= 1.0 or orig <= 0:
+        raise ValueError(f"rope_scaling must extend the window: factor {factor} > 1, original {orig} > 0")
+    cfg = AutoConfig.from_pretrained(model_id)
+    base = dict(getattr(cfg, "rope_parameters", None) or {})
+    if "rope_theta" not in base:
+        base["rope_theta"] = float(getattr(cfg, "rope_theta"))
+    cfg.rope_parameters = {**base, **dict(rope_scaling)}
+    cfg.max_position_embeddings = int(round(orig * factor))
+    return cfg
+
+
+def load_model(model_id: str, rope_scaling: dict | None = None):
     # transformers 5 deprecated `torch_dtype=` in favor of `dtype=`.
-    m = AutoModelForCausalLM.from_pretrained(model_id, dtype=torch.float32, attn_implementation=ATTN_IMPLEMENTATION)
+    kw = {"dtype": torch.float32, "attn_implementation": ATTN_IMPLEMENTATION}
+    if rope_scaling:
+        kw["config"] = scaled_config(model_id, rope_scaling)
+    m = AutoModelForCausalLM.from_pretrained(model_id, **kw)
     return m.to(device()).eval()
 
 

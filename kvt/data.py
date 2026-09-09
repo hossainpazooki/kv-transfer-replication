@@ -9,7 +9,9 @@ from tqdm import tqdm
 
 from kvt.cache import get_layer_kv
 from kvt.pairs import kv_shape
-from kvt.rope import strip_rope_tokens_first
+from kvt.rope import RopeSpec, check_rope_spec_against_model, strip_rope_spec_tokens_first
+
+ROPE_CHECK_ATOL = 1e-5   # the spec's reconstruction of the model's scaled cos/sin, float32, every dumped position
 
 
 def iter_fineweb_sequences(tokenizer, n_seqs: int, seq_len: int, seed: int = 0) -> np.ndarray:
@@ -34,6 +36,11 @@ def dump_kv(model, seqs: np.ndarray, stride: int, out_dir) -> None:
     shape = kv_shape(model.config)
     n_seqs, seq_len = seqs.shape
     keep = np.arange(0, seq_len, stride)
+    # The RoPE the model actually applies (frequencies + attention factor), read from its rotary
+    # embedding and HALT-checked against it at every position of this dump BEFORE any forward pass;
+    # KVDump strips with this spec, so a scaled receiver (YaRN) round-trips exactly.
+    spec = RopeSpec.from_model(model)
+    rope_check = check_rope_spec_against_model(model, spec, torch.arange(seq_len), ROPE_CHECK_ATOL)
     Ks = [[] for _ in range(shape.n_layers)]
     Vs = [[] for _ in range(shape.n_layers)]
     dev = next(model.parameters()).device
@@ -53,6 +60,8 @@ def dump_kv(model, seqs: np.ndarray, stride: int, out_dir) -> None:
         "model": getattr(model.config, "_name_or_path", "unknown"),
         "n_layers": shape.n_layers, "n_kv": shape.n_kv, "d_h": shape.d_h,
         "rope_theta": shape.rope_theta, "stride": stride, "seq_len": int(seq_len), "n_seqs": int(n_seqs),
+        "rope": {**spec.to_json(), "check_max_abs": rope_check, "check_atol": ROPE_CHECK_ATOL,
+                 "max_position_embeddings": int(getattr(model.config, "max_position_embeddings", 0))},
     }, indent=2))
 
 
@@ -63,6 +72,9 @@ class KVDump:
         self.root = root
         self.n_layers, self.n_kv, self.d_h = meta["n_layers"], meta["n_kv"], meta["d_h"]
         self.rope_theta, self.n_seqs, self.stride = meta["rope_theta"], meta["n_seqs"], meta["stride"]
+        # Dumps written before 2026-09-09 carry only rope_theta (default RoPE, m = 1); the spec below is
+        # then exactly the plain-theta rotation, so every archived dump strips as it always did.
+        self.rope_spec = RopeSpec.from_json(meta["rope"]) if "rope" in meta else RopeSpec.default(self.d_h, self.rope_theta)
         self.positions = torch.from_numpy(positions)
         self.seq_idx = seq_idx
         self._cache: "OrderedDict[tuple[str, int], torch.Tensor]" = OrderedDict()
@@ -110,7 +122,7 @@ class KVDump:
             else:
                 t = torch.from_numpy(z["K"].astype(np.float32))
                 if kind == "K_stripped":
-                    t = strip_rope_tokens_first(t, self.positions, self.rope_theta)
+                    t = strip_rope_spec_tokens_first(t, self.positions, self.rope_spec)
         self._cache[key] = t
         self._evict()
         return t

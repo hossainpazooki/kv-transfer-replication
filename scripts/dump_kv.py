@@ -24,9 +24,18 @@ def main():
                          "50-sequence dumps that back Runs 1/2/4, and overwriting them would "
                          "silently change what every re-verify line in docs/ledger.md recomputes "
                          "(KVDump.split(0.2) holds out the last 20%, which moves with n_seqs).")
+    ap.add_argument("--rope-scaling", default=None,
+                    help="JSON in the HF form, e.g. '{\"rope_type\": \"yarn\", \"factor\": 2.5, "
+                         "\"original_max_position_embeddings\": 32768}' (linear-ceiling E9-long). The model is "
+                         "loaded with this scaling, the dump's meta.json records the RoPE spec the model applied "
+                         "(frequencies + attention factor), and KVDump strips with it. Omit for the native RoPE.")
     a = ap.parse_args()
     if a.threads:
         torch.set_num_threads(a.threads)
+    rope_scaling = None
+    if a.rope_scaling:
+        import json as _json
+        rope_scaling = _json.loads(a.rope_scaling)
     pair = PAIRS[a.pair]
     check_matched_kv(AutoConfig.from_pretrained(pair.source), AutoConfig.from_pretrained(pair.target))
     tokens = Path(a.tokens or f"data/tokens/{a.pair}_n50_len1024_seed0.npy")
@@ -41,10 +50,12 @@ def main():
                 f"and this run would write {seqs.shape[0]}. A different n_seqs changes what "
                 f"KVDump.split() holds out, so every number recomputed from this directory would "
                 f"change silently. Pass --out with a different path.")
-    model = load_model(getattr(pair, a.which))
+    model = load_model(getattr(pair, a.which), rope_scaling=rope_scaling)
     t0 = time.time()
     dump_kv(model, seqs, a.stride, out_dir)
-    print(f"wrote {out_dir} n_seqs={seqs.shape[0]} stride={a.stride} in {time.time() - t0:.0f}s")
+    rope = getattr(model.config, "rope_parameters", {})
+    print(f"wrote {out_dir} n_seqs={seqs.shape[0]} stride={a.stride} rope={rope.get('rope_type', 'default')} "
+          f"in {time.time() - t0:.0f}s")
 
 
 if __name__ == "__main__":
