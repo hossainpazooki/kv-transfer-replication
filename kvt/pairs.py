@@ -20,6 +20,18 @@ PAIRS: dict[str, Pair] = {
     "qwen3-0.6b-to-1.7b": Pair("qwen3-0.6b-to-1.7b", "Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B"),
     "qwen3-1.7b-to-4b": Pair("qwen3-1.7b-to-4b", "Qwen/Qwen3-1.7B", "Qwen/Qwen3-4B"),  # [STRETCH]
     "qwen3-0.6b-to-4b": Pair("qwen3-0.6b-to-4b", "Qwen/Qwen3-0.6B", "Qwen/Qwen3-4B"),  # [STRETCH] WP1 direct
+    # linear-ceiling entry 0039 (provisional; its drafts/README.md allocates the number at staging,
+    # and the ledger ends at 0038): second model family, cross-release.
+    # Matched-KV under paper Sec. 2.1: both sides num_key_value_heads=8, head_dim=128 (the 8B declares
+    # no head_dim; kv_shape reaches 128 via hidden_size // num_attention_heads), so check_matched_kv
+    # passes without relaxation. The two sides carry DIFFERENT llama3 RoPE scaling (3.2: factor 32.0;
+    # 3.1: factor 8.0), which is why this pair requires 063f4023 or later: KVDump strips with each
+    # dump's own recorded RopeSpec, not with plain rope_theta.
+    # The key names the receiver IN FULL: the short form would read "llama3.2-3b-to-8b", asserting a
+    # Llama-3.2-8B that does not exist, and this string keys mappers/, data/kv/, data/tokens/ and
+    # every report.
+    "llama3.2-3b-to-llama3.1-8b": Pair("llama3.2-3b-to-llama3.1-8b",
+                                       "meta-llama/Llama-3.2-3B", "meta-llama/Llama-3.1-8B"),
 }
 
 
