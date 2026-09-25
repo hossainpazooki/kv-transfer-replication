@@ -1,3 +1,4 @@
+import pytest
 import torch
 from transformers import Qwen3Config, Qwen3ForCausalLM
 
@@ -30,3 +31,31 @@ def test_repeat_kv_attention_is_registered_and_matches_eager():
         ka, va = get_layer_kv(a.past_key_values, l)
         kb, vb = get_layer_kv(b.past_key_values, l)
         assert torch.allclose(ka, kb, atol=1e-5) and torch.allclose(va, vb, atol=1e-5)
+
+
+def _avail(monkeypatch, cuda: bool, mps: bool):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: mps)
+    monkeypatch.delenv("KVT_DEVICE", raising=False)
+
+
+def test_device_prefers_cuda_then_mps_then_cpu(monkeypatch):
+    _avail(monkeypatch, cuda=True, mps=True)
+    assert models.device().type == "cuda"
+    _avail(monkeypatch, cuda=False, mps=True)
+    assert models.device().type == "mps"
+    _avail(monkeypatch, cuda=False, mps=False)
+    assert models.device().type == "cpu"
+
+
+def test_device_env_override_wins_over_availability(monkeypatch):
+    _avail(monkeypatch, cuda=True, mps=True)
+    monkeypatch.setenv("KVT_DEVICE", "cpu")
+    assert models.device().type == "cpu"
+
+
+def test_device_env_override_rejects_unknown_value(monkeypatch):
+    _avail(monkeypatch, cuda=False, mps=False)
+    monkeypatch.setenv("KVT_DEVICE", "tpu")
+    with pytest.raises(ValueError, match="cuda, mps, cpu"):
+        models.device()

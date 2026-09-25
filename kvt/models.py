@@ -1,10 +1,26 @@
+import os
+
 import torch
 from transformers import AttentionInterface, AutoModelForCausalLM, AutoTokenizer
 from transformers.integrations.sdpa_attention import repeat_kv
 
 
+DEVICES = ("cuda", "mps", "cpu")
+
+
 def device() -> torch.device:
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    """cuda > mps > cpu, unless KVT_DEVICE names one explicitly (a run on Apple silicon
+    sometimes needs to fall back to cpu to compare against a recorded dump)."""
+    forced = os.environ.get("KVT_DEVICE")
+    if forced is not None:
+        if forced not in DEVICES:
+            raise ValueError(f"KVT_DEVICE must be one of {', '.join(DEVICES)}; got {forced!r}")
+        return torch.device(forced)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
 def sdpa_repeat_kv_forward(module, query, key, value, attention_mask, dropout=0.0, scaling=None,
