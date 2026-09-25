@@ -85,3 +85,29 @@ def test_check_matched_kv_allows_unequal_layer_counts():
     tgt = SimpleNamespace(num_hidden_layers=36, num_key_value_heads=8, head_dim=128,
                           hidden_size=2560, num_attention_heads=32, rope_theta=1e6)
     check_matched_kv(src, tgt)  # must not raise
+
+
+def test_pair_resolve_uses_hub_id_and_revision_by_default():
+    p = PAIRS["qwen3-0.6b-to-1.7b"].with_revision("abc123")
+    assert p.resolve("source") == ("Qwen/Qwen3-0.6B", "abc123")
+    assert p.resolve("target") == ("Qwen/Qwen3-1.7B", "abc123")
+    assert PAIRS["qwen3-0.6b-to-1.7b"].resolve("source") == ("Qwen/Qwen3-0.6B", None)
+
+
+def test_pair_resolve_local_path_wins_and_drops_revision():
+    p = PAIRS["qwen3-0.6b-to-1.7b"].with_revision("abc123").with_local_path("/models/qwen")
+    assert p.resolve("source") == ("/models/qwen", None)
+    assert p.resolve("target") == ("/models/qwen", None)
+
+
+def test_pair_resolve_rejects_unknown_which():
+    with pytest.raises(ValueError, match="source"):
+        PAIRS["qwen3-0.6b-to-1.7b"].resolve("middle")
+
+
+def test_with_revision_returns_a_new_pair_and_leaves_the_registry_alone():
+    orig = PAIRS["qwen3-0.6b-to-1.7b"]
+    pinned = orig.with_revision("abc123")
+    assert pinned is not orig and pinned.revision == "abc123"
+    assert orig.revision is None and PAIRS["qwen3-0.6b-to-1.7b"].revision is None
+    assert (pinned.name, pinned.source, pinned.target) == (orig.name, orig.source, orig.target)

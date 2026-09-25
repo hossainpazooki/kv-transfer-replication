@@ -6,6 +6,7 @@ from transformers.integrations.sdpa_attention import repeat_kv
 
 
 DEVICES = ("cuda", "mps", "cpu")
+DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}
 
 
 def device() -> torch.device:
@@ -79,17 +80,23 @@ def scaled_config(model_id: str, rope_scaling: dict):
     return cfg
 
 
-def load_model(model_id: str, rope_scaling: dict | None = None):
+def load_model(model_id: str, rope_scaling: dict | None = None, revision: str | None = None,
+               dtype: str = "float32"):
+    if dtype not in DTYPES:
+        raise ValueError(f"dtype must be one of {', '.join(DTYPES)}; got {dtype!r}")
     # transformers 5 deprecated `torch_dtype=` in favor of `dtype=`.
-    kw = {"dtype": torch.float32, "attn_implementation": ATTN_IMPLEMENTATION}
+    kw = {"dtype": DTYPES[dtype], "attn_implementation": ATTN_IMPLEMENTATION}
+    if revision is not None:      # only forwarded when pinned, so the default call is byte-for-byte the old one
+        kw["revision"] = revision
     if rope_scaling:
         kw["config"] = scaled_config(model_id, rope_scaling)
     m = AutoModelForCausalLM.from_pretrained(model_id, **kw)
     return m.to(device()).eval()
 
 
-def load_tokenizer(model_id: str):
-    return AutoTokenizer.from_pretrained(model_id)
+def load_tokenizer(model_id: str, revision: str | None = None):
+    kw = {} if revision is None else {"revision": revision}
+    return AutoTokenizer.from_pretrained(model_id, **kw)
 
 
 def assert_shared_tokenizer(tok_a, tok_b) -> None:

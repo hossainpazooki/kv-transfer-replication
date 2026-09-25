@@ -67,3 +67,29 @@ def test_consumers_do_not_mutate_the_cached_dump_tensors(tmp_path, tiny_tgt, tin
     assert torch.allclose(d.get("K_rope", 0), k_rope_0_before, atol=0, rtol=0)
     assert torch.allclose(d.get("K_stripped", 1), k_stripped_1_before, atol=0, rtol=0)
     assert torch.allclose(d.get("V", 0), v_0_before, atol=0, rtol=0)
+
+
+def test_dump_records_revision_and_local_path_null_by_default(tmp_path, tiny_tgt, tiny_tokens):
+    dump_kv(tiny_tgt, tiny_tokens(n_seqs=1, seq_len=8), stride=4, out_dir=tmp_path)
+    meta = json.loads((tmp_path / "meta.json").read_text())
+    assert "revision" in meta and "local_path" in meta
+    assert meta["revision"] is None and meta["local_path"] is None
+
+
+def test_dump_records_revision_and_local_path_when_given(tmp_path, tiny_tgt, tiny_tokens):
+    dump_kv(tiny_tgt, tiny_tokens(n_seqs=1, seq_len=8), stride=4, out_dir=tmp_path,
+            revision="abc123", local_path="/models/qwen")
+    meta = json.loads((tmp_path / "meta.json").read_text())
+    assert meta["revision"] == "abc123" and meta["local_path"] == "/models/qwen"
+
+
+def test_dump_records_load_dtype_and_default_key_set_is_old_plus_three(tmp_path, tiny_tgt, tiny_tokens):
+    """The recorded key set at HEAD 063f402 plus exactly revision, local_path, load_dtype."""
+    dump_kv(tiny_tgt, tiny_tokens(n_seqs=1, seq_len=8), stride=4, out_dir=tmp_path)
+    meta = json.loads((tmp_path / "meta.json").read_text())
+    old = {"model", "n_layers", "n_kv", "d_h", "rope_theta", "stride", "seq_len", "n_seqs", "rope"}
+    assert set(meta) == old | {"revision", "local_path", "load_dtype"}
+    assert meta["load_dtype"] == "float32"
+    dump_kv(tiny_tgt, tiny_tokens(n_seqs=1, seq_len=8), stride=4, out_dir=tmp_path / "bf", load_dtype="bfloat16")
+    assert json.loads((tmp_path / "bf" / "meta.json").read_text())["load_dtype"] == "bfloat16"
+    assert np.load(tmp_path / "bf" / "layer00.npz")["K"].dtype == np.float16

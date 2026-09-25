@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -14,6 +14,26 @@ class Pair:
     name: str
     source: str
     target: str
+    # Both optional so the registry entries above stay as written. `revision` pins the Hub
+    # commit a dump was made from (a re-pin downstream is a ledger entry, so it must be
+    # recorded, not implied); `local_path` swaps in an on-disk checkout, which carries its own
+    # revision, so it wins and the Hub revision is not forwarded.
+    revision: str | None = None
+    local_path: str | None = None
+
+    def resolve(self, which: str) -> tuple[str, str | None]:
+        """(model id or local path, revision) for loading `which` ("source" | "target")."""
+        if which not in ("source", "target"):
+            raise ValueError(f"which must be 'source' or 'target', got {which!r}")
+        if self.local_path is not None:
+            return self.local_path, None
+        return getattr(self, which), self.revision
+
+    def with_revision(self, revision: str | None) -> "Pair":
+        return replace(self, revision=revision)
+
+    def with_local_path(self, path: str | None) -> "Pair":
+        return replace(self, local_path=path)
 
 
 PAIRS: dict[str, Pair] = {

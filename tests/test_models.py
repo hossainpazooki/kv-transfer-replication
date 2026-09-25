@@ -59,3 +59,13 @@ def test_device_env_override_rejects_unknown_value(monkeypatch):
     monkeypatch.setenv("KVT_DEVICE", "tpu")
     with pytest.raises(ValueError, match="cuda, mps, cpu"):
         models.device()
+
+
+def test_load_model_dtype_bfloat16_and_rejects_unknown(tmp_path, monkeypatch):
+    monkeypatch.setenv("KVT_DEVICE", "cpu")
+    _tiny("eager").save_pretrained(tmp_path)
+    m = models.load_model(str(tmp_path), dtype="bfloat16")
+    assert all(p.dtype == torch.bfloat16 for p in m.parameters())
+    assert models.load_model(str(tmp_path)).lm_head.weight.dtype == torch.float32
+    with pytest.raises(ValueError, match="int8"):
+        models.load_model(str(tmp_path), dtype="int8")

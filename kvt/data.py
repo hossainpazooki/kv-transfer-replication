@@ -30,7 +30,8 @@ def iter_fineweb_sequences(tokenizer, n_seqs: int, seq_len: int, seed: int = 0) 
 
 
 @torch.no_grad()
-def dump_kv(model, seqs: np.ndarray, stride: int, out_dir) -> None:
+def dump_kv(model, seqs: np.ndarray, stride: int, out_dir, *, revision=None, local_path=None,
+            load_dtype: str = "float32") -> None:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     shape = kv_shape(model.config)
@@ -58,6 +59,8 @@ def dump_kv(model, seqs: np.ndarray, stride: int, out_dir) -> None:
              seq_idx=np.repeat(np.arange(n_seqs), len(keep)).astype(np.int64))
     (out_dir / "meta.json").write_text(json.dumps({
         "model": getattr(model.config, "_name_or_path", "unknown"),
+        "revision": revision, "local_path": local_path,   # how the weights were pinned; null when not pinned
+        "load_dtype": load_dtype,                          # forward dtype; the arrays below are float16 on disk regardless
         "n_layers": shape.n_layers, "n_kv": shape.n_kv, "d_h": shape.d_h,
         "rope_theta": shape.rope_theta, "stride": stride, "seq_len": int(seq_len), "n_seqs": int(n_seqs),
         "rope": {**spec.to_json(), "check_max_abs": rope_check, "check_atol": ROPE_CHECK_ATOL,
