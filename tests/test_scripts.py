@@ -443,3 +443,27 @@ def test_summarize_hellaswag_no_compare_output_is_byte_identical(tmp_path, monke
     assert "comparisons" not in js
     assert "Paired comparisons" not in md
     assert set(js) == {"native", "mapped-k1"}
+
+
+# --- dump_kv.py --probe ---
+
+def test_dump_kv_probe_records_device_dtype_attn_and_peak(tmp_path, monkeypatch, tiny_tgt, tiny_tokens):
+    """--local-path points both sides of the pair at the saved synthetic model, so nothing is
+    downloaded; --probe must print one line and land the same four values in meta.json."""
+    from scripts import dump_kv
+    model_dir, out_dir, tokens = tmp_path / "model", tmp_path / "out", tmp_path / "tokens.npy"
+    tiny_tgt.save_pretrained(model_dir)
+    np.save(tokens, tiny_tokens(n_seqs=2, seq_len=16))
+    monkeypatch.setenv("KVT_DEVICE", "cpu")
+    monkeypatch.setattr(sys, "argv", [
+        "dump_kv.py", "--pair", "qwen3-0.6b-to-1.7b", "--which", "target",
+        "--local-path", str(model_dir), "--tokens", str(tokens), "--out", str(out_dir),
+        "--stride", "4", "--probe"])
+    dump_kv.main()
+    meta = json.loads((out_dir / "meta.json").read_text())
+    assert set(meta["probe"]) == {"device", "dtype", "attn", "peak_bytes"}
+    assert meta["probe"]["attn"] == "sdpa_repeat_kv"
+    assert meta["probe"] == {"device": "cpu", "dtype": "float32", "attn": "sdpa_repeat_kv", "peak_bytes": -1}
+    assert meta["local_path"] == str(model_dir) and meta["revision"] is None
+    assert meta["n_seqs"] == 2
+    assert KVDump.load(out_dir).get("K_rope", 0).shape == (8, 2, 16)
