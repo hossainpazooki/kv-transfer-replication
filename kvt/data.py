@@ -30,7 +30,11 @@ def iter_fineweb_sequences(tokenizer, n_seqs: int, seq_len: int, seed: int = 0) 
 
 
 @torch.no_grad()
-def dump_kv(model, seqs: np.ndarray, stride: int, out_dir) -> None:
+def dump_kv(model, seqs: np.ndarray, stride: int, out_dir, checkpoint=None) -> None:
+    """`checkpoint` (a kvt.checkpoint.CheckpointRecord, optional): when given, its manifest is written
+    as checkpoint_manifest.json and its provenance as meta.json's "checkpoint" block, and "model" is
+    the provenance's model_id (a local load's _name_or_path is a filesystem path). Omitted, the dump
+    is exactly what it was before G3."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     shape = kv_shape(model.config)
@@ -56,13 +60,19 @@ def dump_kv(model, seqs: np.ndarray, stride: int, out_dir) -> None:
     np.savez(out_dir / "meta.npz",
              positions=np.tile(keep, n_seqs).astype(np.int64),
              seq_idx=np.repeat(np.arange(n_seqs), len(keep)).astype(np.int64))
-    (out_dir / "meta.json").write_text(json.dumps({
+    meta = {
         "model": getattr(model.config, "_name_or_path", "unknown"),
         "n_layers": shape.n_layers, "n_kv": shape.n_kv, "d_h": shape.d_h,
         "rope_theta": shape.rope_theta, "stride": stride, "seq_len": int(seq_len), "n_seqs": int(n_seqs),
         "rope": {**spec.to_json(), "check_max_abs": rope_check, "check_atol": ROPE_CHECK_ATOL,
                  "max_position_embeddings": int(getattr(model.config, "max_position_embeddings", 0))},
-    }, indent=2))
+    }
+    if checkpoint is not None:
+        from kvt.checkpoint import MANIFEST_FILE, manifest_text
+        (out_dir / MANIFEST_FILE).write_text(manifest_text(checkpoint.manifest))
+        meta["checkpoint"] = checkpoint.provenance()
+        meta["model"] = meta["checkpoint"]["model_id"]
+    (out_dir / "meta.json").write_text(json.dumps(meta, indent=2))
 
 
 class KVDump:
@@ -81,9 +91,16 @@ class KVDump:
         self._cache_limit: int | None = None
 
     @classmethod
-    def load(cls, root) -> "KVDump":
+    def load(cls, root, checkpoint_dir=None) -> "KVDump":
+        """A dump whose meta.json carries checkpoint provenance (G3) is verified against that
+        checkpoint here, on every load: a changed, missing or unlocatable checkpoint raises
+        kvt.checkpoint.CheckpointMismatch (see locate_checkpoint for how it is found;
+        `checkpoint_dir` overrides). Dumps without provenance load exactly as before."""
         root = Path(root)
         meta = json.loads((root / "meta.json").read_text())
+        if "checkpoint" in meta:
+            from kvt.checkpoint import verify_dump_meta
+            verify_dump_meta(root, meta, checkpoint_dir)
         m = np.load(root / "meta.npz")
         return cls(root, meta, m["positions"], m["seq_idx"])
 

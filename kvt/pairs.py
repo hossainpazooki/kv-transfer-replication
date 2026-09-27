@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -10,10 +11,51 @@ class KVShape:
 
 
 @dataclass(frozen=True)
+class ModelRef:
+    """Exactly which checkpoint to load (bridge spec G3).
+
+    `model_id` is the HF repo id, or -- with `local_path` -- the identifier recorded for provenance
+    (e.g. the base model a local training checkpoint descends from). `revision` pins an HF revision
+    (branch, tag or commit; the resolved commit is what the dump records). `local_path` loads from
+    that directory instead of the Hub. A revision and a local path together are refused: a local
+    directory has no HF revision, and silently ignoring either would record the wrong provenance.
+    """
+    model_id: str
+    revision: str | None = None
+    local_path: Path | None = None
+
+    def __post_init__(self):
+        if not isinstance(self.model_id, str) or not self.model_id.strip():
+            raise ValueError(f"model_id must be a non-empty string, got {self.model_id!r}")
+        if self.revision is not None and (not isinstance(self.revision, str) or not self.revision.strip()):
+            raise ValueError(f"revision must be a non-empty string or None, got {self.revision!r}")
+        if self.local_path is not None and not isinstance(self.local_path, Path):
+            raise TypeError(f"local_path must be a pathlib.Path or None, got {type(self.local_path).__name__}")
+        if self.revision is not None and self.local_path is not None:
+            raise ValueError(f"ambiguous checkpoint for {self.model_id}: both revision={self.revision!r} and "
+                             f"local_path={str(self.local_path)!r} given; pass exactly one")
+
+
+@dataclass(frozen=True)
 class Pair:
     name: str
     source: str
     target: str
+    # G3: optional per-side pins. None (the default) keeps the legacy behavior: load `source`/`target`
+    # as HF ids at whatever revision the Hub/cache serves.
+    source_revision: str | None = None
+    source_local_path: Path | None = None
+    target_revision: str | None = None
+    target_local_path: Path | None = None
+
+    def __post_init__(self):
+        self.model_ref("source"), self.model_ref("target")   # validate both sides at construction
+
+    def model_ref(self, which: str) -> ModelRef:
+        if which not in ("source", "target"):
+            raise ValueError(f"which must be 'source' or 'target', got {which!r}")
+        return ModelRef(getattr(self, which), getattr(self, f"{which}_revision"),
+                        getattr(self, f"{which}_local_path"))
 
 
 PAIRS: dict[str, Pair] = {

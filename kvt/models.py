@@ -38,7 +38,31 @@ ATTN_IMPLEMENTATION = "sdpa_repeat_kv"
 AttentionInterface.register(ATTN_IMPLEMENTATION, sdpa_repeat_kv_forward)
 
 
-def scaled_config(model_id: str, rope_scaling: dict):
+def pretrained_args(model) -> tuple[str, dict]:
+    """(what to pass to from_pretrained, extra kwargs) for a plain id/path or a ModelRef.
+
+    A plain string is returned untouched with no kwargs -- the legacy call, exactly. A ModelRef with
+    a revision passes it through; one with a local path loads that directory with
+    local_files_only=True so a missing or incomplete checkpoint can never fall back to the Hub.
+    """
+    from kvt.pairs import ModelRef
+    if isinstance(model, str):
+        return model, {}
+    if not isinstance(model, ModelRef):
+        raise TypeError(f"expected a model id string or ModelRef, got {type(model).__name__}")
+    if model.local_path is not None:
+        p = model.local_path
+        if not p.is_dir():
+            raise FileNotFoundError(f"local checkpoint {p} for {model.model_id} is not a directory")
+        if not (p / "config.json").is_file():
+            raise FileNotFoundError(f"local checkpoint {p} for {model.model_id} has no config.json")
+        return str(p), {"local_files_only": True}
+    if model.revision is not None:
+        return model.model_id, {"revision": model.revision}
+    return model.model_id, {}
+
+
+def scaled_config(model_id, rope_scaling: dict):
     """The model's config with RoPE scaling applied (linear-ceiling E9-long, 2026-09-09).
 
     `rope_scaling` is the HF form, e.g. {"rope_type": "yarn", "factor": 2.5,
@@ -54,7 +78,8 @@ def scaled_config(model_id: str, rope_scaling: dict):
     factor, orig = float(rope_scaling["factor"]), int(rope_scaling["original_max_position_embeddings"])
     if factor <= 1.0 or orig <= 0:
         raise ValueError(f"rope_scaling must extend the window: factor {factor} > 1, original {orig} > 0")
-    cfg = AutoConfig.from_pretrained(model_id)
+    path, extra = pretrained_args(model_id)
+    cfg = AutoConfig.from_pretrained(path, **extra)
     base = dict(getattr(cfg, "rope_parameters", None) or {})
     if "rope_theta" not in base:
         base["rope_theta"] = float(getattr(cfg, "rope_theta"))
@@ -63,17 +88,20 @@ def scaled_config(model_id: str, rope_scaling: dict):
     return cfg
 
 
-def load_model(model_id: str, rope_scaling: dict | None = None):
+def load_model(model_id, rope_scaling: dict | None = None):
+    """`model_id` is an HF id / path string (legacy, unchanged) or a kvt.pairs.ModelRef."""
+    path, extra = pretrained_args(model_id)
     # transformers 5 deprecated `torch_dtype=` in favor of `dtype=`.
-    kw = {"dtype": torch.float32, "attn_implementation": ATTN_IMPLEMENTATION}
+    kw = {"dtype": torch.float32, "attn_implementation": ATTN_IMPLEMENTATION, **extra}
     if rope_scaling:
         kw["config"] = scaled_config(model_id, rope_scaling)
-    m = AutoModelForCausalLM.from_pretrained(model_id, **kw)
+    m = AutoModelForCausalLM.from_pretrained(path, **kw)
     return m.to(device()).eval()
 
 
-def load_tokenizer(model_id: str):
-    return AutoTokenizer.from_pretrained(model_id)
+def load_tokenizer(model_id):
+    path, extra = pretrained_args(model_id)
+    return AutoTokenizer.from_pretrained(path, **extra)
 
 
 def assert_shared_tokenizer(tok_a, tok_b) -> None:
