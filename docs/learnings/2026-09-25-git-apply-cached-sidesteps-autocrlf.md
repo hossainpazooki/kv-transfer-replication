@@ -1,0 +1,7 @@
+ts: 2026-09-25T04:24:52Z
+commit: 47bdd39 (HEAD at capture; working tree carried the uncommitted task 1 + 3 files)
+session: Claude Code session a0bc4703-7c59-4b7f-bcf2-e44daa6e7ffa, building per-task patches after `git add -p` proved unsplittable
+status: verified
+fact: This checkout has `core.autocrlf=true`, so tracked files are CRLF in the working tree and LF in the index. Python `write_text`, `sed -i` and `cat >>` from the Bash tool each produce a different line ending, which left touched files with mixed endings until normalized. A patch generated with `git diff` (always LF) then cannot be trusted to apply to the working tree, but `git apply --cached <patch>` applies it to the LF index only and never reads the working tree, so it is immune to the mismatch; the four task patches applied that way in sequence and `git diff` (index vs working tree) came back empty afterwards. On a CRLF checkout, stage from patches with `--cached` and let the working tree be.
+basis: `git config core.autocrlf` printed `true`; `file kvt/models.py` printed `Python script, ASCII text executable, with CRLF line terminators`. Earlier in the session, `for k in 1 2 3 4; do git apply --cached --check task$k.patch && git apply --cached task$k.patch; done` printed `task1 applies` ... `task4 applies` with staged stats ending at `10 files changed, 241 insertions(+), 14 deletions(-)`, and the following `git diff --stat` (index vs working tree) printed nothing.
+re-verify: sh -c 'git config core.autocrlf; file kvt/models.py'
