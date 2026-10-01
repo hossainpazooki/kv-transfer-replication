@@ -87,27 +87,26 @@ def test_check_matched_kv_allows_unequal_layer_counts():
     check_matched_kv(src, tgt)  # must not raise
 
 
-def test_pair_resolve_uses_hub_id_and_revision_by_default():
-    p = PAIRS["qwen3-0.6b-to-1.7b"].with_revision("abc123")
-    assert p.resolve("source") == ("Qwen/Qwen3-0.6B", "abc123")
-    assert p.resolve("target") == ("Qwen/Qwen3-1.7B", "abc123")
-    assert PAIRS["qwen3-0.6b-to-1.7b"].resolve("source") == ("Qwen/Qwen3-0.6B", None)
+def test_pair_model_ref_is_unpinned_by_default():
+    from kvt.pairs import ModelRef
+    p = PAIRS["qwen3-0.6b-to-1.7b"]
+    assert p.model_ref("source") == ModelRef("Qwen/Qwen3-0.6B")
+    assert p.model_ref("target") == ModelRef("Qwen/Qwen3-1.7B")
+    assert p.model_ref("source").revision is None and p.model_ref("source").local_path is None
 
 
-def test_pair_resolve_local_path_wins_and_drops_revision():
-    p = PAIRS["qwen3-0.6b-to-1.7b"].with_revision("abc123").with_local_path("/models/qwen")
-    assert p.resolve("source") == ("/models/qwen", None)
-    assert p.resolve("target") == ("/models/qwen", None)
-
-
-def test_pair_resolve_rejects_unknown_which():
-    with pytest.raises(ValueError, match="source"):
-        PAIRS["qwen3-0.6b-to-1.7b"].resolve("middle")
-
-
-def test_with_revision_returns_a_new_pair_and_leaves_the_registry_alone():
+def test_pair_pins_are_per_side_and_leave_the_registry_alone():
+    from dataclasses import replace
+    from pathlib import Path
+    from kvt.pairs import ModelRef
     orig = PAIRS["qwen3-0.6b-to-1.7b"]
-    pinned = orig.with_revision("abc123")
-    assert pinned is not orig and pinned.revision == "abc123"
-    assert orig.revision is None and PAIRS["qwen3-0.6b-to-1.7b"].revision is None
+    pinned = replace(orig, source_revision="abc123", target_local_path=Path("/models/qwen"))
+    assert pinned.model_ref("source") == ModelRef("Qwen/Qwen3-0.6B", revision="abc123")
+    assert pinned.model_ref("target") == ModelRef("Qwen/Qwen3-1.7B", local_path=Path("/models/qwen"))
+    assert pinned is not orig and PAIRS["qwen3-0.6b-to-1.7b"].source_revision is None
     assert (pinned.name, pinned.source, pinned.target) == (orig.name, orig.source, orig.target)
+
+
+def test_pair_rejects_unknown_which():
+    with pytest.raises(ValueError, match="source"):
+        PAIRS["qwen3-0.6b-to-1.7b"].model_ref("middle")

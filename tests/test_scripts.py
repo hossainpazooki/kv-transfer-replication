@@ -448,22 +448,28 @@ def test_summarize_hellaswag_no_compare_output_is_byte_identical(tmp_path, monke
 # --- dump_kv.py --probe ---
 
 def test_dump_kv_probe_records_device_dtype_attn_and_peak(tmp_path, monkeypatch, tiny_tgt, tiny_tokens):
-    """--local-path points both sides of the pair at the saved synthetic model, so nothing is
-    downloaded; --probe must print one line and land the same four values in meta.json."""
+    """A registry entry whose two sides are both pinned to the saved synthetic model, so nothing is
+    downloaded (the CLI pin is per --which side and refuses to override a pinned entry); --probe must
+    print one line and land the same four values in meta.json, after the checkpoint block."""
+    from pathlib import Path
     from scripts import dump_kv
+    from kvt.pairs import PAIRS, Pair
     model_dir, out_dir, tokens = tmp_path / "model", tmp_path / "out", tmp_path / "tokens.npy"
     tiny_tgt.save_pretrained(model_dir)
     np.save(tokens, tiny_tokens(n_seqs=2, seq_len=16))
+    monkeypatch.setitem(PAIRS, "tiny", Pair("tiny", "org/src", "org/tgt",
+                                             source_local_path=Path(model_dir), target_local_path=Path(model_dir)))
     monkeypatch.setenv("KVT_DEVICE", "cpu")
     monkeypatch.setattr(sys, "argv", [
-        "dump_kv.py", "--pair", "qwen3-0.6b-to-1.7b", "--which", "target",
-        "--local-path", str(model_dir), "--tokens", str(tokens), "--out", str(out_dir),
-        "--stride", "4", "--probe"])
+        "dump_kv.py", "--pair", "tiny", "--which", "target",
+        "--tokens", str(tokens), "--out", str(out_dir), "--stride", "4", "--probe"])
     dump_kv.main()
-    meta = json.loads((out_dir / "meta.json").read_text())
+    text = (out_dir / "meta.json").read_text()
+    meta = json.loads(text)
     assert set(meta["probe"]) == {"device", "dtype", "attn", "peak_bytes"}
     assert meta["probe"]["attn"] == "sdpa_repeat_kv"
     assert meta["probe"] == {"device": "cpu", "dtype": "float32", "attn": "sdpa_repeat_kv", "peak_bytes": -1}
-    assert meta["local_path"] == str(model_dir) and meta["revision"] is None
+    assert meta["checkpoint"]["kind"] == "local" and meta["checkpoint"]["local_checkpoint"] == "model"
+    assert str(tmp_path) not in text and "local_path" not in meta
     assert meta["n_seqs"] == 2
-    assert KVDump.load(out_dir).get("K_rope", 0).shape == (8, 2, 16)
+    assert KVDump.load(out_dir, checkpoint_dir=model_dir).get("K_rope", 0).shape == (8, 2, 16)
