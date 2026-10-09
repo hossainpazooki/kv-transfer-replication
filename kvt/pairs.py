@@ -75,6 +75,11 @@ PAIRS: dict[str, Pair] = {
     # every report.
     "llama3.2-3b-to-llama3.1-8b": Pair("llama3.2-3b-to-llama3.1-8b",
                                        "meta-llama/Llama-3.2-3B", "meta-llama/Llama-3.1-8B"),
+    # lag-ladder's pilot (its ledger entry 0005): the writer and the reader are the SAME model id at two
+    # published RLVR revisions (`step_200` ... `step_2600`, stride 200), so matched-KV holds trivially and
+    # the pair pins neither side; each dump pins one revision through `--revision step_N`. The key names
+    # the model, not a step: steps are per-dump provenance (meta.json's `checkpoint` block), never a pair.
+    "olmo2-1b-rlvr1": Pair("olmo2-1b-rlvr1", "allenai/OLMo-2-0425-1B-RLVR1", "allenai/OLMo-2-0425-1B-RLVR1"),
 }
 
 
