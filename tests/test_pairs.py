@@ -118,3 +118,13 @@ def test_olmo_ladder_pair_is_one_model_id_unpinned_on_both_sides():
     assert p.source == p.target == "allenai/OLMo-2-0425-1B-RLVR1"
     assert p.model_ref("source").revision is None and p.model_ref("target").revision is None
     assert p.model_ref("source").local_path is None
+
+
+def test_qwen25_distance_pairs_are_registered_unpinned():
+    """lag-ladder's weight-distance points: three directions from two writers, nothing pinned in the registry."""
+    for name, src, tgt in (("qwen2.5-1.5b-to-instruct", "Qwen/Qwen2.5-1.5B", "Qwen/Qwen2.5-1.5B-Instruct"),
+                           ("qwen2.5-1.5b-to-math", "Qwen/Qwen2.5-1.5B", "Qwen/Qwen2.5-Math-1.5B"),
+                           ("qwen2.5-math-1.5b-to-r1-distill", "Qwen/Qwen2.5-Math-1.5B", "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")):
+        p = PAIRS[name]
+        assert (p.source, p.target) == (src, tgt)
+        assert p.model_ref("source").revision is None and p.model_ref("target").local_path is None

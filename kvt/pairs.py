@@ -80,6 +80,14 @@ PAIRS: dict[str, Pair] = {
     # the pair pins neither side; each dump pins one revision through `--revision step_N`. The key names
     # the model, not a step: steps are per-dump provenance (meta.json's `checkpoint` block), never a pair.
     "olmo2-1b-rlvr1": Pair("olmo2-1b-rlvr1", "allenai/OLMo-2-0425-1B-RLVR1", "allenai/OLMo-2-0425-1B-RLVR1"),
+    # lag-ladder's weight-distance points (its ledger 0007): three real training directions on one architecture
+    # (Qwen2ForCausalLM, 28 layers, 12 heads / 2 KV heads of 128, vocab 151936). Math and R1-Distill carry
+    # rope_theta 1e4 against the base's 1e6; KVDump strips each dump with its own RopeSpec, so content-space K
+    # compares across them. R1-Distill unties its embeddings; nothing here reads them.
+    "qwen2.5-1.5b-to-instruct": Pair("qwen2.5-1.5b-to-instruct", "Qwen/Qwen2.5-1.5B", "Qwen/Qwen2.5-1.5B-Instruct"),
+    "qwen2.5-1.5b-to-math": Pair("qwen2.5-1.5b-to-math", "Qwen/Qwen2.5-1.5B", "Qwen/Qwen2.5-Math-1.5B"),
+    "qwen2.5-math-1.5b-to-r1-distill": Pair("qwen2.5-math-1.5b-to-r1-distill", "Qwen/Qwen2.5-Math-1.5B",
+                                            "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"),
 }
 
 
