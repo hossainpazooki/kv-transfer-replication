@@ -110,3 +110,11 @@ def test_pair_pins_are_per_side_and_leave_the_registry_alone():
 def test_pair_rejects_unknown_which():
     with pytest.raises(ValueError, match="source"):
         PAIRS["qwen3-0.6b-to-1.7b"].model_ref("middle")
+
+
+def test_olmo_ladder_pair_is_one_model_id_unpinned_on_both_sides():
+    """lag-ladder's pilot pair: same id both sides, revisions pinned per dump, never in the registry."""
+    p = PAIRS["olmo2-1b-rlvr1"]
+    assert p.source == p.target == "allenai/OLMo-2-0425-1B-RLVR1"
+    assert p.model_ref("source").revision is None and p.model_ref("target").revision is None
+    assert p.model_ref("source").local_path is None
