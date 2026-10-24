@@ -88,6 +88,15 @@ PAIRS: dict[str, Pair] = {
     "qwen2.5-1.5b-to-math": Pair("qwen2.5-1.5b-to-math", "Qwen/Qwen2.5-1.5B", "Qwen/Qwen2.5-Math-1.5B"),
     "qwen2.5-math-1.5b-to-r1-distill": Pair("qwen2.5-math-1.5b-to-r1-distill", "Qwen/Qwen2.5-Math-1.5B",
                                             "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"),
+    # lag-ladder's own run on a third family (its design §14.5): the trained model is SmolLM3-3B-Base (SmolLM3ForCausalLM,
+    # 36 layers, 16 heads / 4 KV heads of 128 via hidden_size // num_attention_heads, vocab 128256, rope_theta 5e6, every
+    # fourth layer rope-free: no_rope_layer_interval = 4). Identity pair, as olmo2-1b-rlvr1: the post-trained SmolLM3-3B
+    # does not share get_vocab() with Base (added tokens 128017/128018 are <|reserved_special_token_9|>/<..._10|> in Base
+    # and <code>/</code> in the post-trained), so assert_shared_tokenizer refuses it as a target. Nothing reads the target.
+    # The source is NOT pinned here: lag-ladder dumps each saved step by --local-path, which dump_kv refuses on a pinned
+    # side. K_rope and V are recorded as on every layer; K_stripped is meaningless on the rope-free layers (statistic (A)
+    # is closed there and not run on this pair).
+    "smollm3-3b-base": Pair("smollm3-3b-base", "HuggingFaceTB/SmolLM3-3B-Base", "HuggingFaceTB/SmolLM3-3B-Base"),
 }
 
 
